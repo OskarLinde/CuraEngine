@@ -11,7 +11,7 @@
 namespace cura {
 
 GCodeExport::GCodeExport()
-: currentPosition(0,0,0)
+: currentPosition(0,0,0), startPosition(INT32_MIN,INT32_MIN,0)
 {
     extrusionAmount = 0;
     extrusionPerMM = 0;
@@ -129,6 +129,17 @@ Point GCodeExport::getPositionXY()
     return Point(currentPosition.x, currentPosition.y);
 }
 
+void GCodeExport::resetStartPosition()
+{
+    startPosition.x = INT32_MIN;
+    startPosition.y = INT32_MIN;
+}
+
+Point GCodeExport::getStartPositionXY()
+{
+    return Point(startPosition.x, startPosition.y);
+}
+
 int GCodeExport::getPositionZ()
 {
     return currentPosition.z;
@@ -163,7 +174,10 @@ void GCodeExport::writeComment(const char* comment, ...)
     va_start(args, comment);
     fprintf(f, ";");
     vfprintf(f, comment, args);
-    fprintf(f, "\n");
+    if (flavor == GCODE_FLAVOR_BFB)
+        fprintf(f, "\r\n");
+    else
+        fprintf(f, "\n");
     va_end(args);
 }
 
@@ -172,7 +186,10 @@ void GCodeExport::writeLine(const char* line, ...)
     va_list args;
     va_start(args, line);
     vfprintf(f, line, args);
-    fprintf(f, "\n");
+    if (flavor == GCODE_FLAVOR_BFB)
+        fprintf(f, "\r\n");
+    else
+        fprintf(f, "\n");
     va_end(args);
 }
 
@@ -212,10 +229,10 @@ void GCodeExport::writeMove(Point p, int speed, int lineWidth)
                 if (currentSpeed != int(rpm * 10))
                 {
                     //fprintf(f, "; %f e-per-mm %d mm-width %d mm/s\n", extrusionPerMM, lineWidth, speed);
-                    fprintf(f, "M108 S%0.1f\n", rpm);
+                    fprintf(f, "M108 S%0.1f\r\n", rpm);
                     currentSpeed = int(rpm * 10);
                 }
-                fprintf(f, "M%d01\n", extruderNr);
+                fprintf(f, "M%d01\r\n", extruderNr + 1);
                 isRetracted = false;
             }
             //Fix the speed by the actual RPM we are asking, because of rounding errors we cannot get all RPM values, but we have a lot more resolution in the feedrate value.
@@ -229,11 +246,11 @@ void GCodeExport::writeMove(Point p, int speed, int lineWidth)
             //If we are not extruding, check if we still need to disable the extruder. This causes a retraction due to auto-retraction.
             if (!isRetracted)
             {
-                fprintf(f, "M103\n");
+                fprintf(f, "M103\r\n");
                 isRetracted = true;
             }
         }
-        fprintf(f, "G1 X%0.2f Y%0.2f Z%0.2f F%0.1f\n", INT2MM(p.X - extruderOffset[extruderNr].X), INT2MM(p.Y - extruderOffset[extruderNr].Y), INT2MM(zPos), fspeed);
+        fprintf(f, "G1 X%0.3f Y%0.3f Z%0.3f F%0.1f\r\n", INT2MM(p.X - extruderOffset[extruderNr].X), INT2MM(p.Y - extruderOffset[extruderNr].Y), INT2MM(zPos), fspeed);
     }else{
         
         //Normal E handling.
@@ -243,7 +260,7 @@ void GCodeExport::writeMove(Point p, int speed, int lineWidth)
             if (isRetracted)
             {
                 if (retractionZHop > 0)
-                    fprintf(f, "G1 Z%0.2f\n", float(currentPosition.z)/1000);
+                    fprintf(f, "G1 Z%0.3f\n", float(currentPosition.z)/1000);
                 if (flavor == GCODE_FLAVOR_ULTIGCODE || flavor == GCODE_FLAVOR_REPRAP_VOLUMATRIC)
                 {
                     fprintf(f, "G11\n");
@@ -269,15 +286,16 @@ void GCodeExport::writeMove(Point p, int speed, int lineWidth)
             currentSpeed = speed;
         }
 
-        fprintf(f, " X%0.2f Y%0.2f", INT2MM(p.X - extruderOffset[extruderNr].X), INT2MM(p.Y - extruderOffset[extruderNr].Y));
+        fprintf(f, " X%0.3f Y%0.3f", INT2MM(p.X - extruderOffset[extruderNr].X), INT2MM(p.Y - extruderOffset[extruderNr].Y));
         if (zPos != currentPosition.z)
-            fprintf(f, " Z%0.2f", INT2MM(zPos));
+            fprintf(f, " Z%0.3f", INT2MM(zPos));
         if (lineWidth != 0)
             fprintf(f, " %c%0.5f", extruderCharacter[extruderNr], extrusionAmount);
         fprintf(f, "\n");
     }
     
     currentPosition = Point3(p.X, p.Y, zPos);
+    startPosition = currentPosition;
     estimateCalculator.plan(TimeEstimateCalculator::Position(INT2MM(currentPosition.x), INT2MM(currentPosition.y), INT2MM(currentPosition.z), extrusionAmount), speed);
 }
 
@@ -297,7 +315,7 @@ void GCodeExport::writeRetraction(bool force)
             estimateCalculator.plan(TimeEstimateCalculator::Position(INT2MM(currentPosition.x), INT2MM(currentPosition.y), INT2MM(currentPosition.z), extrusionAmount - retractionAmount), currentSpeed);
         }
         if (retractionZHop > 0)
-            fprintf(f, "G1 Z%0.2f\n", INT2MM(currentPosition.z + retractionZHop));
+            fprintf(f, "G1 Z%0.3f\n", INT2MM(currentPosition.z + retractionZHop));
         extrusionAmountAtPreviousRetraction = extrusionAmount;
         isRetracted = true;
     }
@@ -310,7 +328,7 @@ void GCodeExport::switchExtruder(int newExtruder)
     if (flavor == GCODE_FLAVOR_BFB)
     {
         if (!isRetracted)
-            fprintf(f, "M103\n");
+            fprintf(f, "M103\r\n");
         isRetracted = true;
         return;
     }
@@ -324,7 +342,7 @@ void GCodeExport::switchExtruder(int newExtruder)
         currentSpeed = retractionSpeed;
     }
     if (retractionZHop > 0)
-        fprintf(f, "G1 Z%0.2f\n", INT2MM(currentPosition.z + retractionZHop));
+        fprintf(f, "G1 Z%0.3f\n", INT2MM(currentPosition.z + retractionZHop));
     extruderNr = newExtruder;
     if (flavor == GCODE_FLAVOR_MACH3)
         resetExtrusionValue();
@@ -339,7 +357,11 @@ void GCodeExport::switchExtruder(int newExtruder)
 
 void GCodeExport::writeCode(const char* str)
 {
-    fprintf(f, "%s\n", str);
+    fprintf(f, "%s", str);
+    if (flavor == GCODE_FLAVOR_BFB)
+        fprintf(f, "\r\n");
+    else
+        fprintf(f, "\n");
 }
 
 void GCodeExport::writeFanCommand(int speed)
